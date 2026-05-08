@@ -2,7 +2,8 @@ const form = document.querySelector("#evidence-form");
 const textInput = document.querySelector("#text-input");
 const fileInput = document.querySelector("#file-input");
 const fileList = document.querySelector("#file-list");
-const dropzone = document.querySelector("#dropzone");
+const composer = document.querySelector("#composer");
+const attachBtn = document.querySelector("#attach-btn");
 const analyseBtn = document.querySelector("#analyse-btn");
 const clearBtn = document.querySelector("#clear-btn");
 const loadDemoBtn = document.querySelector("#load-demo");
@@ -21,16 +22,18 @@ Reply ASAP as we have many candidates.`;
 
 fileInput.addEventListener("change", () => addFiles([...fileInput.files]));
 
-dropzone.addEventListener("dragover", (event) => {
+attachBtn.addEventListener("click", () => fileInput.click());
+
+composer.addEventListener("dragover", (event) => {
   event.preventDefault();
-  dropzone.classList.add("is-over");
+  composer.classList.add("is-over");
 });
 
-dropzone.addEventListener("dragleave", () => dropzone.classList.remove("is-over"));
+composer.addEventListener("dragleave", () => composer.classList.remove("is-over"));
 
-dropzone.addEventListener("drop", (event) => {
+composer.addEventListener("drop", (event) => {
   event.preventDefault();
-  dropzone.classList.remove("is-over");
+  composer.classList.remove("is-over");
   addFiles([...event.dataTransfer.files]);
 });
 
@@ -56,7 +59,7 @@ form.addEventListener("submit", async (event) => {
 
   for (const file of files) {
     inputs.push({
-      type: "image",
+      type: file.type.startsWith("audio/") ? "audio" : "image",
       name: file.name,
       mimeType: file.type,
       content: await fileToBase64(file)
@@ -95,11 +98,12 @@ document.querySelector("#export-btn").addEventListener("click", () => {
 
 function addFiles(nextFiles) {
   const accepted = nextFiles.filter((file) => {
-    const validType = /^image\/(png|jpe?g|webp)$/i.test(file.type);
+    const validType = /^image\/(png|jpe?g|webp)$/i.test(file.type) || /^audio\/(wav|wave|mpeg|mp3|mp4|m4a|webm|ogg|x-m4a)$/i.test(file.type);
     const validSize = file.size <= 8 * 1024 * 1024;
     return validType && validSize;
   });
   files = [...files, ...accepted].slice(0, 5);
+  fileInput.value = "";
   renderFiles();
 }
 
@@ -108,7 +112,8 @@ function renderFiles() {
   for (const [index, file] of files.entries()) {
     const row = document.createElement("div");
     row.className = "file-pill";
-    row.innerHTML = `<span>${escapeHtml(file.name)}</span><button class="ghost" type="button" aria-label="Remove ${escapeHtml(file.name)}">Remove</button>`;
+    const kind = file.type.startsWith("audio/") ? "Audio" : "Image";
+    row.innerHTML = `<span>${kind}: ${escapeHtml(file.name)}</span><button class="ghost" type="button" aria-label="Remove ${escapeHtml(file.name)}">Remove</button>`;
     row.querySelector("button").addEventListener("click", () => {
       files = files.filter((_, i) => i !== index);
       renderFiles();
@@ -200,8 +205,9 @@ function titleCase(value) {
 }
 
 function modeLabel(mode) {
-  if (mode === "gemma") return "Gemma";
-  if (mode === "local_fallback") return "Local fallback";
+  if (mode === "gemma_audio_cloud") return "Gemma hosted";
+  if (mode === "gemma_llamacpp") return "Gemma local";
+  if (mode === "rules") return "Rules";
   return "Local";
 }
 

@@ -1,0 +1,1 @@
+Your bank account has been suspended due to failed BVN verification. To avoid permanent restriction, verify your account now at http://secure-bank-verify.example/login and enter your OTP. This link expires today.

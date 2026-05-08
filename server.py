@@ -12,7 +12,8 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
 PUBLIC_DIR = ROOT / "public"
-OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+ONLINE_AUDIO_GEMMA_DEFAULT_BASE = "https://router.huggingface.co/v1"
+LLAMACPP_CHAT_PATH = "/v1/chat/completions"
 MAX_BODY_BYTES = 12 * 1024 * 1024
 
 MIME = {
@@ -133,23 +134,34 @@ def analyse_evidence(payload: dict) -> dict:
     if not inputs:
         raise PublicError(400, "No evidence provided.", "no_evidence")
 
-    if not os.getenv("OPENROUTER_API_KEY"):
-        verdict = local_verdict(inputs)
-        verdict["mode"] = "local"
-        return verdict
+    has_audio = any(item["type"] == "audio" for item in inputs)
 
-    try:
-        raw = call_openrouter(inputs)
-        verdict = parse_verdict(raw)
-        verdict["timeline"] = build_timeline(inputs)
-        verdict["mode"] = "gemma"
-        return verdict
-    except (HTTPError, URLError, TimeoutError, ValueError):
-        verdict = local_verdict(inputs)
-        verdict["mode"] = "local_fallback"
-        verdict["notice"] = "The model provider was unavailable, so Sentinel used the private local fallback."
-        log("model_call_failed", message="provider_unavailable")
-        return verdict
+    if local_llamacpp_enabled():
+        try:
+            raw = call_llamacpp_gemma(inputs)
+            verdict = parse_verdict(raw)
+            verdict["timeline"] = build_timeline(inputs)
+            verdict["mode"] = "gemma_llamacpp"
+            verdict["notice"] = "Analysed with local Gemma through llama.cpp. Evidence stayed on this device."
+            return verdict
+        except (HTTPError, URLError, TimeoutError, ValueError):
+            log("model_call_failed", provider="llamacpp")
+
+    if has_audio and os.getenv("ONLINE_AUDIO_GEMMA_API_KEY"):
+        try:
+            raw = call_online_audio_gemma(inputs)
+            verdict = parse_verdict(raw)
+            verdict["timeline"] = build_timeline(inputs)
+            verdict["mode"] = "gemma_audio_cloud"
+            verdict["notice"] = "Audio was analysed by the configured hosted Gemma 4 E4B endpoint."
+            return verdict
+        except (HTTPError, URLError, TimeoutError, ValueError):
+            log("model_call_failed", provider="online_audio_gemma")
+
+    verdict = local_verdict(inputs)
+    verdict["mode"] = "rules"
+    verdict["notice"] = "Gemma was unavailable, so Sentinel used the deterministic last-resort rules engine."
+    return verdict
 
 
 def normalise_inputs(inputs: object) -> list[dict]:
@@ -167,6 +179,10 @@ def normalise_inputs(inputs: object) -> list[dict]:
             mime_type = str(item.get("mimeType") or "")
             if re.match(r"^image/(png|jpe?g|webp)$", mime_type, re.I):
                 clean.append({"type": "image", "name": clean_name(item.get("name")), "content": content, "mimeType": mime_type})
+        if kind == "audio" and content:
+            mime_type = str(item.get("mimeType") or "")
+            if re.match(r"^audio/(wav|wave|mpeg|mp3|mp4|m4a|webm|ogg|x-m4a)$", mime_type, re.I):
+                clean.append({"type": "audio", "name": clean_name(item.get("name")), "content": content, "mimeType": mime_type})
     return clean
 
 
@@ -175,7 +191,65 @@ def clean_name(value: object) -> str:
     return name or "Evidence"
 
 
-def call_openrouter(inputs: list[dict]) -> str:
+def local_llamacpp_enabled() -> bool:
+    return os.getenv("LLAMACPP_ENABLED", "1").lower() not in {"0", "false", "no", "off"}
+
+
+def call_llamacpp_gemma(inputs: list[dict]) -> str:
+    model = os.getenv("LLAMACPP_MODEL", "gemma-4-E4B-it")
+    base_url = os.getenv("LLAMACPP_URL", "http://127.0.0.1:8080").rstrip("/")
+    content = build_openai_multimodal_content(inputs, include_audio=True)
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": content}],
+        "temperature": 0.1,
+        "max_tokens": 1400,
+        "response_format": {"type": "json_object"},
+    }).encode("utf-8")
+
+    headers = {"Content-Type": "application/json"}
+    api_key = os.getenv("LLAMACPP_API_KEY")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    request = Request(
+        f"{base_url}{LLAMACPP_CHAT_PATH}",
+        data=body,
+        method="POST",
+        headers=headers,
+    )
+    with urlopen(request, timeout=int(os.getenv("LLAMACPP_TIMEOUT", "60"))) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+
+def call_online_audio_gemma(inputs: list[dict]) -> str:
+    model = os.getenv("ONLINE_AUDIO_GEMMA_MODEL", "google/gemma-4-E4B-it:fastest")
+    base_url = os.getenv("ONLINE_AUDIO_GEMMA_URL", ONLINE_AUDIO_GEMMA_DEFAULT_BASE).rstrip("/")
+    content = build_openai_multimodal_content(inputs, include_audio=True)
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": content}],
+        "temperature": 0.1,
+        "max_tokens": 1400,
+        "response_format": {"type": "json_object"},
+    }).encode("utf-8")
+
+    request = Request(
+        f"{base_url}/chat/completions",
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {os.getenv('ONLINE_AUDIO_GEMMA_API_KEY')}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urlopen(request, timeout=int(os.getenv("ONLINE_AUDIO_GEMMA_TIMEOUT", "60"))) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+
+def build_openai_multimodal_content(inputs: list[dict], include_audio: bool) -> list[dict]:
     content: list[dict] = [{"type": "text", "text": SYSTEM_PROMPT}]
     for index, item in enumerate(inputs, start=1):
         label = f"Evidence {index}: {item.get('name') or item['type']}"
@@ -185,31 +259,30 @@ def call_openrouter(inputs: list[dict]) -> str:
                 "type": "image_url",
                 "image_url": {"url": f"data:{item['mimeType']};base64,{item['content']}"},
             })
+        elif item["type"] == "audio" and include_audio:
+            content.append({"type": "text", "text": f"--- {label} ({item['mimeType']}) ---\nTranscribe or interpret this short audio evidence, then include it in the fraud analysis."})
+            content.append({
+                "type": "input_audio",
+                "input_audio": {"data": item["content"], "format": audio_format(item["mimeType"])},
+            })
+        elif item["type"] == "audio":
+            content.append({"type": "text", "text": f"--- {label} ---\nAudio evidence was attached but this engine cannot inspect audio."})
         else:
             content.append({"type": "text", "text": f"--- {label} ---\n{item['content']}"})
-    content.append({"type": "text", "text": "Return only the JSON object."})
+    content.append({"type": "text", "text": "Analyse all evidence together as one case. Return only the JSON object."})
+    return content
 
-    body = json.dumps({
-        "model": os.getenv("OPENROUTER_MODEL", "google/gemma-4-27b-it"),
-        "messages": [{"role": "user", "content": content}],
-        "temperature": 0.1,
-        "max_tokens": 1600,
-    }).encode("utf-8")
 
-    request = Request(
-        f"{OPENROUTER_BASE}/chat/completions",
-        data=body,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": os.getenv("APP_URL", f"http://localhost:{os.getenv('PORT', '3000')}"),
-            "X-Title": "Gemma Sentinel",
-        },
-    )
-    with urlopen(request, timeout=35) as response:
-        data = json.loads(response.read().decode("utf-8"))
-    return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+def audio_format(mime_type: str) -> str:
+    if "mpeg" in mime_type or "mp3" in mime_type:
+        return "mp3"
+    if "mp4" in mime_type or "m4a" in mime_type:
+        return "mp4"
+    if "webm" in mime_type:
+        return "webm"
+    if "ogg" in mime_type:
+        return "ogg"
+    return "wav"
 
 
 def parse_verdict(raw_text: str) -> dict:
@@ -241,26 +314,17 @@ def validate_verdict(value: dict) -> dict:
 
 
 def local_verdict(inputs: list[dict]) -> dict:
-    joined = "\n".join(item["content"] if item["type"] == "text" else f"{item['name']} image evidence" for item in inputs).lower()
-    flags: list[str] = []
-
-    if re.search(r"\b(pay|send|transfer|deposit)\b.+\b(fee|activation|registration|processing|release)\b", joined):
-        flags.append("It asks for an upfront fee before releasing money, a job, or a benefit.")
-    if re.search(r"\b(urgent|asap|before friday|limited|immediately|now)\b", joined):
-        flags.append("It creates deadline pressure to stop careful verification.")
-    if re.search(r"\b(whatsapp|telegram|dm)\b", joined):
-        flags.append("It moves the conversation to informal channels that are harder to verify.")
-    if re.search(r"\b(chevron|nnpc|cbn|efcc|firs|gtbank|access bank|uba|opay|palmpay)\b", joined):
-        flags.append("It invokes a trusted institution or brand that should be verified independently.")
-    if re.search(r"\b(won|prize|lottery|shortlisted|investment|double|crypto|inheritance)\b", joined):
-        flags.append("It uses a high-reward hook commonly seen in scam scripts.")
-    if any(item["type"] == "image" for item in inputs):
-        flags.append("Image evidence can contain forged logos, edited receipts, or manipulated screenshots.")
-
-    risk_score = "critical" if len(flags) >= 5 else "high" if len(flags) >= 3 else "medium" if flags else "low"
+    joined = "\n".join(
+        item["content"] if item["type"] == "text" else f"{item['name']} {item['type']} evidence"
+        for item in inputs
+    ).lower()
+    evidence = score_rules(joined, inputs)
+    flags = evidence["flags"]
+    points = evidence["points"]
+    risk_score = score_to_risk(points)
     return {
         "riskScore": risk_score,
-        "riskPercentage": default_percent(risk_score),
+        "riskPercentage": min(98, max(default_percent(risk_score), points)),
         "scamType": infer_scam_type(joined, inputs),
         "redFlags": flags or ["No strong local rule matched, but independent verification is still recommended."],
         "reasoning": (
@@ -273,20 +337,126 @@ def local_verdict(inputs: list[dict]) -> dict:
             if risk_score == "low"
             else "Do not pay, click links, or share codes. Save the evidence, block the sender, and report through your bank or relevant authority."
         ),
-        "confidence": "medium" if any(item["type"] == "image" for item in inputs) else "high",
+        "confidence": "medium" if any(item["type"] == "image" for item in inputs) else ("high" if points >= 70 else "medium"),
         "isScam": risk_score in {"high", "critical"},
         "timeline": build_timeline(inputs),
     }
 
 
+def score_rules(text: str, inputs: list[dict]) -> dict:
+    rules: list[tuple[int, str, str]] = [
+        (34, r"\b(pay|send|transfer|deposit|wire|remit|western union|moneygram|bitcoin|usdt|gift card)\b.{0,90}\b(fee|activation|registration|processing|clearance|release|tax|charges?|stamp duty|courier|verification)\b", "It asks for a payment or fee before a promised benefit is released."),
+        (30, r"\b(fee|activation|registration|processing|clearance|release|tax|charges?|stamp duty|courier|verification)\b.{0,90}\b(pay|send|transfer|deposit|wire|remit)\b", "It links a fee or charge to receiving money, documents, employment, or a prize."),
+        (28, r"\b(inheritance|next of kin|beneficiary|unclaimed|abandoned|consignment|contract fund|over[- ]?invoiced|dormant account|foreign account|fund transfer)\b", "It uses classic advance-fee language around inheritance, beneficiaries, dormant accounts, or trapped funds."),
+        (26, r"\b(i am|am|this is)\b.{0,80}\b(barrister|attorney|solicitor|bank manager|director|diplomat|minister|reverend|widow|orphan|prince|princess|doctor)\b", "It leans on a claimed authority or emotionally loaded identity."),
+        (24, r"\b(central bank|cbn|efcc|firs|nnpc|chevron|shell|gtbank|access bank|uba|zenith|first bank|fbi|united nations|world bank|imf|customs)\b", "It invokes a trusted institution or brand that should be verified independently."),
+        (22, r"\b(confidential|strictly confidential|keep this secret|do not disclose|private transaction|trust you|urgent assistance)\b", "It asks for secrecy or unusual trust, which protects the scammer from outside verification."),
+        (22, r"\b(urgent|asap|immediately|within 24 hours|before friday|deadline|limited time|act now|reply now)\b", "It creates deadline pressure to stop careful verification."),
+        (22, r"\b(won|winner|lottery|prize|grant|donation|compensation|approved loan|shortlisted|selected|investment opportunity|double your money|guaranteed profit)\b", "It uses a high-reward hook commonly seen in scam scripts."),
+        (32, r"\b(account suspended|account has been suspended|verify your account|update your account|confirm your details|password|otp|one[- ]?time code|pin|bvn|nin|login)\b", "It asks for account verification or sensitive credentials."),
+        (22, r"https?://|www\.|bit\.ly|tinyurl|t\.me/|wa\.me/|whatsapp|telegram|\+\d{7,}", "It includes external contact routes, links, or phone numbers that need independent verification."),
+        (18, r"\b(kindly|dear friend|dearest|greetings|god fearing|good day|i need your assistance|mutually beneficial|percentage|share of the money)\b", "It contains phrasing common in 419-style social-engineering messages."),
+        (16, r"\b(fake|receipt|alert|payment confirmation|successful transfer|pending transfer|release funds|activation code)\b", "It resembles fake payment-alert or fabricated receipt language."),
+        (18, r"\b(mail order|credit card \(not paypal\)|credit card not paypal|not paypal|ups|fedex|united parcel service|shipping method|my clients|your products|sales sir|attention: ?sales)\b", "It resembles mail-order or reshipping fraud language around card payment and courier shipment."),
+        (16, r"\b(invoice|purchase order|bank details|change of account|vendor|payment request|proforma)\b", "It contains invoice or payment-change language commonly abused in business fraud."),
+        (14, r"\b(romance|love interest|online relationship|military|peacekeeping|hospital|medical emergency|stranded|customs hold)\b", "It contains emotional-pressure patterns used in romance and emergency scams."),
+        (12, r"\b(crypto|bitcoin|forex|trading|mining|wallet|investment platform|roi|daily profit)\b", "It contains investment or crypto terminology often used in fraud offers."),
+        (18, r"\b(chargeback|stolen card|card testing|velocity|multiple failed|device fingerprint|account age|synthetic identity|suspicious transaction|high[- ]risk merchant)\b", "It contains transaction-risk or account-fraud indicators."),
+        (14, r"\b(fake review|paid review|review exchange|five star review|5 star review|verified purchase review|deceptive opinion|astroturf)\b", "It contains review manipulation or deceptive-opinion indicators."),
+        (12, r"\b(fake news|misinformation|share before deleted|they do not want you to know|miracle cure|secret investment)\b", "It contains deceptive-content or misinformation signals."),
+    ]
+
+    points = 0
+    flags: list[str] = []
+    seen: set[str] = set()
+    for weight, pattern, flag in rules:
+        if re.search(pattern, text, re.I | re.S):
+            points += weight
+            if flag not in seen:
+                flags.append(flag)
+                seen.add(flag)
+
+    if any(item["type"] == "image" for item in inputs):
+        points += 28
+        flags.append("Image evidence can contain forged logos, edited receipts, or manipulated screenshots; use Gemma vision for the real image read.")
+
+    if any(item["type"] == "audio" for item in inputs):
+        points += 28
+        flags.append("Audio evidence can contain spoken impersonation, urgency, payment instructions, or voice-note scams; use local Gemma E4B/E2B audio for the real audio read.")
+
+    if len(text) > 900 and re.search(r"\b(fund|bank|account|transfer|beneficiary|fee|urgent|confidential)\b", text):
+        points += 12
+        flags.append("The message is unusually long while steering toward money movement or secrecy, a common 419 pattern.")
+
+    if re.search(r"\b(fee|charges?|tax|clearance|processing)\b", text) and re.search(r"\b(million|usd|dollars?|euro|euros?|pounds?|gbp|ngn|naira)\b|\$", text):
+        points += 20
+        flags.append("It combines a large promised amount with smaller fees or charges, a core advance-fee structure.")
+
+    if re.search(r"\b(account suspended|verify your account|password|otp|pin|bvn|nin|login)\b", text) and re.search(r"https?://|www\.|bit\.ly|tinyurl|t\.me/|wa\.me/", text):
+        points += 18
+        flags.append("It combines account-security pressure with a link, a strong SMS phishing pattern.")
+
+    if re.search(r"\b(crypto|bitcoin|forex|trading|investment|roi|profit)\b", text) and re.search(r"\b(guaranteed|double|activation|minimum|send|pay|deposit|whatsapp)\b", text):
+        points += 18
+        flags.append("It combines investment language with guaranteed returns or payment pressure.")
+
+    if re.search(r"\b(nigeria|lagos|abuja)\b", text) and re.search(r"\b(credit card|not paypal|ups|fedex|united parcel service|shipping)\b", text) and re.search(r"\b(products?|order|sales|company|clients?)\b", text):
+        points += 44
+        flags.append("It combines overseas product ordering, card payment preference, and courier shipping, a known card-fraud/reshipping pattern.")
+
+    if re.search(r"\b(romance|love interest|online relationship|military|peacekeeping|widow|stranded|hospital|medical emergency|customs hold)\b", text) and re.search(r"\b(send|pay|transfer|gift card|bitcoin|money|help|urgent|emergency)\b", text):
+        points += 36
+        flags.append("It combines emotional trust-building with a money or emergency request.")
+
+    if re.search(r"\b(invoice|vendor|supplier|purchase order|payment request|bank details|account number)\b", text) and re.search(r"\b(change|new account|updated account|urgent payment|wire|transfer|remit)\b", text):
+        points += 34
+        flags.append("It combines invoice/vendor language with payment-detail changes or urgent transfer pressure.")
+
+    if re.search(r"\b(transaction|amount|merchant|device|ip|account age|chargeback|failed login|failed attempt|velocity|synthetic identity)\b", text) and re.search(r"\b(csv|row|rows|multiple|high risk|unusual|suspicious|mismatch|new device|foreign ip)\b", text):
+        points += 44
+        flags.append("It describes transaction anomalies consistent with account or payment fraud review.")
+
+    if re.search(r"\b(fake review|paid review|review exchange|five star|5 star|verified purchase|deceptive opinion|astroturf)\b", text) and re.search(r"\b(pay|refund|coupon|bulk|seller|listing|rating|positive)\b", text):
+        points += 44
+        flags.append("It combines review/rating language with payment, bulk activity, or seller manipulation.")
+
+    return {"points": min(points, 100), "flags": flags[:8]}
+
+
+def score_to_risk(points: int) -> str:
+    if points >= 86:
+        return "critical"
+    if points >= 58:
+        return "high"
+    if points >= 28:
+        return "medium"
+    return "low"
+
+
 def infer_scam_type(text: str, inputs: list[dict]) -> str:
+    if re.search(r"\b(inheritance|next of kin|beneficiary|unclaimed|consignment|contract fund|dormant account|foreign account|fund transfer|barrister|widow|prince|princess)\b", text):
+        return "419 advance-fee scam"
     if re.search(r"\b(job|shortlisted|salary|recruit|hr director)\b", text):
         return "Fake job offer / advance-fee fraud"
     if re.search(r"\b(crypto|bitcoin|investment|double)\b", text):
         return "Crypto investment scam"
+    if re.search(r"\b(account suspended|verify your account|password|otp|pin|bvn|nin|login)\b", text):
+        return "SMS phishing / credential theft"
+    if re.search(r"\b(invoice|purchase order|change of account|vendor|payment request|proforma)\b", text):
+        return "Invoice or business payment fraud"
+    if re.search(r"\b(mail order|credit card \(not paypal\)|credit card not paypal|not paypal|ups|fedex|united parcel service|shipping method|my clients|your products|attention: ?sales)\b", text):
+        return "Mail-order card fraud / reshipping scam"
+    if re.search(r"\b(romance|love interest|online relationship|military|peacekeeping|widow|stranded|hospital|medical emergency|customs hold)\b", text):
+        return "Romance or emergency assistance scam"
+    if re.search(r"\b(transaction|chargeback|card testing|device fingerprint|account age|synthetic identity|suspicious transaction)\b", text):
+        return "Bank account or transaction fraud"
+    if re.search(r"\b(fake review|paid review|review exchange|five star review|5 star review|verified purchase review|deceptive opinion|astroturf)\b", text):
+        return "Review or deceptive-content fraud"
+    if re.search(r"\b(fake news|misinformation|share before deleted|miracle cure|secret investment)\b", text):
+        return "Deceptive content / misinformation"
     if re.search(r"\b(bank|transfer|alert|gtbank|access bank|uba|opay|palmpay)\b", text) or any(item["type"] == "image" for item in inputs):
         return "Fake bank alert / payment scam"
-    if re.search(r"\b(inheritance|beneficiary|lottery|prize|fund)\b", text):
+    if re.search(r"\b(lottery|prize|grant|donation|compensation)\b", text):
         return "419 advance-fee scam"
     return "Suspicious message or document"
 

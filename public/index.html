@@ -18,7 +18,7 @@
         <div class="status-strip" aria-label="Privacy and runtime status">
           <span>No accounts</span>
           <span>No evidence logs</span>
-          <span>Local fallback</span>
+          <span>Gemma-first</span>
         </div>
       </section>
 
@@ -27,29 +27,23 @@
           <div class="panel-head">
             <div>
               <h2>Evidence</h2>
-              <p>Paste text, add an image, or combine both for a case timeline.</p>
+              <p>Paste a message and attach screenshots in one place.</p>
             </div>
             <button class="ghost" type="button" id="load-demo">Load demo</button>
           </div>
 
-          <label class="dropzone" for="file-input" id="dropzone">
-            <input id="file-input" name="file" type="file" accept="image/png,image/jpeg,image/webp">
-            <span class="drop-title">Add screenshot</span>
-            <span class="drop-subtitle">PNG, JPG, or WEBP under 8 MB</span>
-          </label>
-
-          <div id="file-list" class="file-list" aria-live="polite"></div>
-
-          <label class="field">
-            <span>Message or document text</span>
-            <textarea id="text-input" rows="11" placeholder="Paste the WhatsApp message, email, SMS, invoice text, or any suspicious claim here."></textarea>
-          </label>
-
-          <div class="actions">
-            <button class="primary" type="submit" id="analyse-btn">Analyse</button>
-            <button class="ghost" type="button" id="clear-btn">Clear</button>
+          <div class="composer" id="composer">
+            <input id="file-input" name="file" type="file" accept="image/png,image/jpeg,image/webp,audio/wav,audio/mpeg,audio/mp4,audio/webm,audio/ogg" multiple>
+            <div id="file-list" class="file-list" aria-live="polite"></div>
+            <textarea id="text-input" rows="8" aria-label="Message or document text" placeholder="Paste the suspicious message, email, SMS, invoice text, or claim here."></textarea>
+            <div class="composer-actions">
+              <button class="icon-button" type="button" id="attach-btn" aria-label="Attach screenshot" title="Attach screenshot">+</button>
+              <div class="composer-spacer"></div>
+              <button class="ghost" type="button" id="clear-btn">Clear</button>
+              <button class="primary" type="submit" id="analyse-btn">Analyse</button>
+            </div>
           </div>
-          <p class="fineprint">PDF parsing is intentionally not bundled to avoid a heavy dependency. Paste PDF text here, or analyse screenshots of the PDF pages.</p>
+          <p class="fineprint">Attach screenshots or short audio clips under 8 MB. Audio is routed to Gemma 4 E4B/E2B-capable engines online or offline.</p>
         </form>
 
         <section class="panel result-panel" aria-live="polite">
@@ -82,7 +76,7 @@
                 <strong id="confidence">Medium</strong>
               </div>
               <div>
-                <span>Mode</span>
+                <span>Analysis engine</span>
                 <strong id="mode">Local</strong>
               </div>
             </div>
