@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Gemma Sentinel</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="intro" aria-labelledby="title">
+        <div>
+          <p class="eyebrow">Private scam analysis</p>
+          <h1 id="title">Gemma Sentinel</h1>
+          <p class="lede">Drop in suspicious evidence. Get a risk verdict, specific red flags, and a plain-English next step without server-side storage.</p>
+        </div>
+        <div class="status-strip" aria-label="Privacy and runtime status">
+          <span>No accounts</span>
+          <span>No evidence logs</span>
+          <span>Local fallback</span>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <form id="evidence-form" class="panel" autocomplete="off">
+          <div class="panel-head">
+            <div>
+              <h2>Evidence</h2>
+              <p>Paste text, add an image, or combine both for a case timeline.</p>
+            </div>
+            <button class="ghost" type="button" id="load-demo">Load demo</button>
+          </div>
+
+          <label class="dropzone" for="file-input" id="dropzone">
+            <input id="file-input" name="file" type="file" accept="image/png,image/jpeg,image/webp">
+            <span class="drop-title">Add screenshot</span>
+            <span class="drop-subtitle">PNG, JPG, or WEBP under 8 MB</span>
+          </label>
+
+          <div id="file-list" class="file-list" aria-live="polite"></div>
+
+          <label class="field">
+            <span>Message or document text</span>
+            <textarea id="text-input" rows="11" placeholder="Paste the WhatsApp message, email, SMS, invoice text, or any suspicious claim here."></textarea>
+          </label>
+
+          <div class="actions">
+            <button class="primary" type="submit" id="analyse-btn">Analyse</button>
+            <button class="ghost" type="button" id="clear-btn">Clear</button>
+          </div>
+          <p class="fineprint">PDF parsing is intentionally not bundled to avoid a heavy dependency. Paste PDF text here, or analyse screenshots of the PDF pages.</p>
+        </form>
+
+        <section class="panel result-panel" aria-live="polite">
+          <div id="empty-state" class="empty-state">
+            <h2>Verdict appears here</h2>
+            <p>Sentinel will classify the risk, explain the suspicious patterns, and suggest the next safest move.</p>
+          </div>
+
+          <div id="loading-state" class="loading hidden">
+            <div class="pulse"></div>
+            <p>Reading evidence and checking asymmetric scam patterns...</p>
+          </div>
+
+          <article id="result" class="result hidden">
+            <div class="verdict-top">
+              <div>
+                <p class="eyebrow">Risk verdict</p>
+                <h2 id="risk-label">Medium</h2>
+              </div>
+              <div class="score-ring" id="score-ring"><span id="risk-percent">0%</span></div>
+            </div>
+
+            <div class="meta-grid">
+              <div>
+                <span>Scam type</span>
+                <strong id="scam-type">Unknown</strong>
+              </div>
+              <div>
+                <span>Confidence</span>
+                <strong id="confidence">Medium</strong>
+              </div>
+              <div>
+                <span>Mode</span>
+                <strong id="mode">Local</strong>
+              </div>
+            </div>
+
+            <div id="notice" class="notice hidden"></div>
+
+            <section>
+              <h3>Red flags</h3>
+              <ol id="red-flags" class="red-flags"></ol>
+            </section>
+
+            <section>
+              <h3>Reasoning</h3>
+              <p id="reasoning" class="reasoning"></p>
+            </section>
+
+            <section class="action-card">
+              <h3>Recommended action</h3>
+              <p id="recommended-action"></p>
+            </section>
+
+            <section id="timeline" class="timeline hidden">
+              <h3>Investigation timeline</h3>
+              <p id="timeline-text"></p>
+            </section>
+
+            <div class="actions">
+              <button class="primary" type="button" id="export-btn">Print report</button>
+            </div>
+          </article>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
