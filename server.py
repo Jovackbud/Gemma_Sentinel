@@ -26,31 +26,55 @@ MIME = {
 }
 
 SYSTEM_PROMPT = """
-You are Gemma Sentinel, a privacy-preserving fraud and scam detection analyst with deep knowledge of Nigerian and West African scam patterns.
+You are Gemma Sentinel, a forensic fraud analyst specialised in Nigerian/West African scam patterns. Your job is to PROTECT potential victims. You operate under a guilty-until-proven-innocent posture: users submit evidence because they already suspect something, so your default assumption is that the evidence IS fraudulent unless it clearly matches a legitimate institutional pattern.
 
-Analyse the supplied evidence. Evidence may include screenshots or text. Be careful, specific, and honest about uncertainty.
+CRITICAL RULES:
+1. If ANY of these red flags appear, isScam MUST be true and riskScore MUST be "high" or "critical":
+   - Requests for advance fees, processing fees, activation fees, clearance charges, or any payment before receiving a benefit.
+   - Unsolicited claims of inheritance, lottery, prize, compensation, grants, or unclaimed funds.
+   - Pressure tactics: urgency, deadlines, threats of account suspension, "act now".
+   - Requests for OTP, PIN, BVN, NIN, passwords, or other credentials.
+   - Impersonation of banks, government agencies, oil companies, international organisations.
+   - Links to unofficial domains, URL shorteners, or messaging apps for "verification".
+   - Claims of guaranteed investment returns, crypto doubling, or forex profits.
+   - Romance/emotional manipulation combined with money requests.
+   - Invoice/vendor payment changes or new bank details.
+   - Fake job offers requiring upfront payment.
+2. riskPercentage MUST be consistent with riskScore: low=0-27, medium=28-57, high=58-85, critical=86-100.
+3. If the evidence is clearly legitimate (e.g., a real bank telling users NOT to share PINs, an official app-store notice), ONLY then set isScam to false and riskScore to "low".
+4. When in doubt, err on the side of protecting the user. A false alarm is better than a missed scam.
 
-Return valid JSON only:
+Return valid JSON only, no markdown, no explanation outside JSON:
 {
   "riskScore": "low" | "medium" | "high" | "critical",
   "riskPercentage": <number 0-100>,
   "scamType": "<specific scam type>",
-  "redFlags": ["<specific red flag>"],
-  "reasoning": "<2-4 plain-English sentences>",
-  "recommendedAction": "<clear next step>",
+  "redFlags": ["<specific red flag found in the evidence>"],
+  "reasoning": "<2-4 plain-English sentences explaining WHY this is or is not a scam>",
+  "recommendedAction": "<clear next step for the user>",
   "confidence": "low" | "medium" | "high",
   "isScam": true | false
 }
 
-Watch for advance fees, fake bank alerts, fake jobs, impersonation of trusted institutions, urgency, requests for codes, suspicious links, forged screenshots, crypto doubling schemes, and emotional manipulation. Do not reveal hidden chain-of-thought; provide concise reasons only.
+EXAMPLES:
+
+Evidence: "I am Barrister John. My deceased client left USD 10.5M. You are next of kin. Send processing fee urgently. Strictly confidential."
+Answer: {"riskScore":"critical","riskPercentage":96,"scamType":"419 advance-fee scam","redFlags":["Unsolicited inheritance claim from unknown barrister","Requests processing fee before releasing funds","Urgency and secrecy demands","Classic next-of-kin narrative"],"reasoning":"This is a textbook 419 advance-fee scam. It follows the exact pattern: a stranger claims you are heir to a large sum, demands secrecy, and requires an upfront fee. No legitimate inheritance works this way.","recommendedAction":"Do not respond or send any money. Block the sender and report to your local cybercrime authority.","confidence":"high","isScam":true}
+
+Evidence: "Dear customer, your debit card expires soon. Visit any branch or use the official mobile app from your phone's app store to request a replacement. We will never ask for your PIN, OTP, password, or BVN by SMS."
+Answer: {"riskScore":"low","riskPercentage":8,"scamType":"None detected","redFlags":[],"reasoning":"This message explicitly tells the user NOT to share credentials and directs them to official channels (branch or app store). This is consistent with legitimate bank communication patterns.","recommendedAction":"This appears legitimate, but always verify by calling your bank's official number or visiting a branch directly.","confidence":"high","isScam":false}
+
+Evidence: "Your bank account has been suspended. Verify your BVN and OTP now at http://bad.example to restore access."
+Answer: {"riskScore":"high","riskPercentage":82,"scamType":"SMS phishing / credential theft","redFlags":["Claims account suspension to create panic","Requests BVN and OTP via link","Suspicious non-bank URL","Urgency pressure"],"reasoning":"This is a phishing attack. Banks do not ask customers to verify BVN or OTP through external links. The URL is not a legitimate bank domain and the urgency is designed to bypass careful thinking.","recommendedAction":"Do not click the link or enter any information. Contact your bank directly through their official app or phone number.","confidence":"high","isScam":true}
 """
 
 
 def main() -> None:
     load_local_env()
+    host = os.getenv("HOST", "127.0.0.1")
     port = int(os.getenv("PORT", "3000"))
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    log("server_started", port=port, url=f"http://localhost:{port}")
+    server = ThreadingHTTPServer((host, port), Handler)
+    log("server_started", host=host, port=port, url=f"http://localhost:{port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -83,9 +107,9 @@ class Handler(BaseHTTPRequestHandler):
         except PublicError as error:
             self.send_json(error.status, {"error": error.message})
             log("request_failed", status=error.status, message=error.code)
-        except Exception:
+        except Exception as exc:
             self.send_json(500, {"error": "Request failed."})
-            log("request_failed", status=500, message="internal_error")
+            log("request_failed", status=500, message="internal_error", error=type(exc).__name__)
 
     def read_json(self) -> dict:
         length = int(self.headers.get("content-length", "0") or "0")
@@ -205,7 +229,7 @@ def clean_name(value: object) -> str:
 
 def call_google_gemma(inputs: list[dict]) -> str:
     model = os.getenv("GOOGLE_MODEL", "gemma-4-26b-a4b-it")
-    parts: list[dict] = [{"text": SYSTEM_PROMPT}]
+    parts: list[dict] = []
     for index, item in enumerate(inputs, start=1):
         label = f"Evidence {index}: {item.get('name') or item['type']}"
         if item["type"] == "image":
@@ -218,9 +242,10 @@ def call_google_gemma(inputs: list[dict]) -> str:
             })
         elif item["type"] == "text":
             parts.append({"text": f"--- {label} ---\n{item['content']}"})
-    parts.append({"text": "Analyse all evidence together as one case. Return only the JSON object."})
+    parts.append({"text": "Analyse all evidence above as one case. Determine if this is a scam. If ANY red flag from the CRITICAL RULES is present, isScam MUST be true. Return only the JSON verdict."})
 
     body = json.dumps({
+        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
             "temperature": 0.1,
@@ -235,9 +260,16 @@ def call_google_gemma(inputs: list[dict]) -> str:
         method="POST",
         headers={"Content-Type": "application/json"},
     )
-    with urlopen(request, timeout=int(os.getenv("GOOGLE_TIMEOUT", "45"))) as response:
+    with urlopen(request, timeout=int(os.getenv("GOOGLE_TIMEOUT", "60"))) as response:
         data = json.loads(response.read().decode("utf-8"))
-    return data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+    # Gemma 4 models return chain-of-thought in parts with "thought": true.
+    # The actual JSON verdict is in the last non-thought part.
+    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+    text = ""
+    for part in parts:
+        if not part.get("thought"):
+            text = part.get("text", "")
+    return text
 
 
 def local_llamacpp_enabled() -> bool:
@@ -309,30 +341,49 @@ def audio_format(mime_type: str) -> str:
 
 
 def parse_verdict(raw_text: str) -> dict:
+    """Parse model JSON into a validated verdict. Raises ValueError on failure
+    so the caller can fall through to the next engine instead of returning
+    an empty low-risk verdict labeled as model output."""
     cleaned = str(raw_text or "").replace("```json", "").replace("```", "").strip()
     start = cleaned.find("{")
     end = cleaned.rfind("}")
     if start < 0 or end <= start:
-        return local_verdict([])
+        raise ValueError("No JSON object found in model response")
     try:
         return validate_verdict(json.loads(cleaned[start:end + 1]))
-    except json.JSONDecodeError:
-        return local_verdict([])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in model response: {exc}") from exc
 
 
 def validate_verdict(value: dict) -> dict:
     risk_scores = {"low", "medium", "high", "critical"}
     confidence_values = {"low", "medium", "high"}
     risk_score = value.get("riskScore") if value.get("riskScore") in risk_scores else "medium"
+
+    # Enforce coherence: isScam MUST be true if riskScore is high or critical,
+    # regardless of what the model returned. The model sometimes says isScam=false
+    # while assigning high risk — that's incoherent and dangerous.
+    model_is_scam = value.get("isScam")
+    if risk_score in {"high", "critical"}:
+        is_scam = True
+    elif risk_score == "low" and model_is_scam is not None:
+        is_scam = bool(model_is_scam)
+    else:
+        # medium risk: trust model if it said true, default to true for safety
+        is_scam = bool(model_is_scam) if model_is_scam is not None else True
+
+    # Enforce riskPercentage floor per tier so the model can't say "high risk, 18%"
+    raw_pct = clamp(value.get("riskPercentage"), 0, 100, default_percent(risk_score))
+
     return {
         "riskScore": risk_score,
-        "riskPercentage": clamp(value.get("riskPercentage"), 0, 100, default_percent(risk_score)),
+        "riskPercentage": enforce_tier_percent(risk_score, raw_pct),
         "scamType": clean_text(value.get("scamType"), "Unclear"),
         "redFlags": [clean_text(flag, "") for flag in value.get("redFlags", []) if clean_text(flag, "")][:8],
         "reasoning": clean_text(value.get("reasoning"), "The evidence needs independent verification before you trust it."),
         "recommendedAction": clean_text(value.get("recommendedAction"), "Verify through an official channel before responding or sending money."),
         "confidence": value.get("confidence") if value.get("confidence") in confidence_values else "medium",
-        "isScam": bool(value.get("isScam", risk_score in {"high", "critical"})),
+        "isScam": is_scam,
     }
 
 
@@ -347,7 +398,7 @@ def local_verdict(inputs: list[dict]) -> dict:
     risk_score = score_to_risk(points)
     return {
         "riskScore": risk_score,
-        "riskPercentage": min(98, max(default_percent(risk_score), points)),
+        "riskPercentage": enforce_tier_percent(risk_score, max(default_percent(risk_score), points)),
         "scamType": infer_scam_type(joined, inputs),
         "redFlags": flags or ["No strong local rule matched, but independent verification is still recommended."],
         "reasoning": (
@@ -494,6 +545,17 @@ def build_timeline(inputs: list[dict]) -> dict | None:
         "ultimateGoal": "Money, account access, identity details, or trust escalation.",
         "urgencyLevel": "escalating",
     }
+
+
+TIER_FLOORS = {"low": 0, "medium": 28, "high": 58, "critical": 86}
+TIER_CEILINGS = {"low": 27, "medium": 57, "high": 85, "critical": 100}
+
+
+def enforce_tier_percent(risk_score: str, raw_pct: int) -> int:
+    """Clamp a raw percentage into the valid range for its risk tier."""
+    floor = TIER_FLOORS.get(risk_score, 0)
+    ceiling = TIER_CEILINGS.get(risk_score, 100)
+    return max(floor, min(ceiling, raw_pct))
 
 
 def default_percent(risk_score: str) -> int:

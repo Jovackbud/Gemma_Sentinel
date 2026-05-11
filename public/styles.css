@@ -303,6 +303,36 @@ button:disabled {
   display: none !important;
 }
 
+.scam-badge {
+  margin: 16px 0;
+  padding: 14px 18px;
+  border-radius: 8px;
+  font-size: 1.05rem;
+  font-weight: 900;
+  text-align: center;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  transition: background .2s ease, color .2s ease, border-color .2s ease;
+}
+
+.scam-badge[data-scam="true"] {
+  background: rgba(251, 113, 133, .14);
+  border: 1.5px solid rgba(251, 113, 133, .5);
+  color: #fb7185;
+  animation: badge-pulse 2s ease-in-out infinite;
+}
+
+.scam-badge[data-scam="false"] {
+  background: rgba(74, 222, 128, .1);
+  border: 1.5px solid rgba(74, 222, 128, .35);
+  color: #4ade80;
+}
+
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .7; }
+}
+
 .verdict-top {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -523,16 +553,25 @@ button:disabled {
 }
 
 @media print {
+  * {
+    color: #1a1a1a !important;
+    background: #fff !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+    animation: none !important;
+    border-color: #d1d5db !important;
+  }
+
   body {
-    color: #111827;
-    background: #fff;
+    background: #fff !important;
   }
 
   .intro,
   .panel:first-child,
   .actions,
   .empty-state,
-  .loading {
+  .loading,
+  .notice {
     display: none !important;
   }
 
@@ -543,16 +582,60 @@ button:disabled {
     width: 100%;
     margin: 0;
     padding: 0;
-    box-shadow: none;
   }
 
-  .panel,
-  .meta-grid div,
-  .action-card,
-  .timeline,
-  .notice {
-    border-color: #cbd5e1;
-    background: #fff;
-    box-shadow: none;
+  .panel {
+    border: none !important;
+    padding: 0;
+  }
+
+  .verdict-top {
+    border-bottom: 1.5px solid #d1d5db !important;
+    padding-bottom: 12px;
+  }
+
+  .score-ring {
+    background: none !important;
+    border: 3px solid #1a1a1a !important;
+  }
+
+  .score-ring span {
+    font-size: 1rem;
+  }
+
+  .scam-badge {
+    margin: 14px 0;
+    padding: 10px 16px;
+    font-size: 1rem;
+    border-width: 2px !important;
+    border-style: solid !important;
+  }
+
+  .scam-badge[data-scam="true"] {
+    color: #b91c1c !important;
+    border-color: #b91c1c !important;
+  }
+
+  .scam-badge[data-scam="false"] {
+    color: #15803d !important;
+    border-color: #15803d !important;
+  }
+
+  .meta-grid div {
+    border: 1px solid #d1d5db !important;
+    padding: 10px;
+  }
+
+  .action-card {
+    border: 1px solid #d1d5db !important;
+    padding: 12px;
+  }
+
+  .red-flags {
+    padding-left: 20px;
+  }
+
+  .red-flags li {
+    margin-bottom: 4px;
   }
 }

@@ -75,19 +75,27 @@ form.addEventListener("submit", async (event) => {
   analyseBtn.disabled = true;
   showLoading();
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60000);
+
   try {
     const response = await fetch("/api/analyse", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ inputs })
+      body: JSON.stringify({ inputs }),
+      signal: controller.signal
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Analysis failed.");
     lastVerdict = data;
     renderVerdict(data);
   } catch (error) {
-    showNoticeOnly(error.message || "Analysis failed. Please try again.");
+    const message = error.name === "AbortError"
+      ? "Analysis timed out after 60 seconds. Try again or reduce the number of attachments."
+      : (error.message || "Analysis failed. Please try again.");
+    showNoticeOnly(message);
   } finally {
+    clearTimeout(timeout);
     analyseBtn.disabled = false;
   }
 });
@@ -136,6 +144,12 @@ function renderVerdict(verdict) {
   document.querySelector("#risk-percent").textContent = `${Math.round(percent)}%`;
   document.querySelector("#score-ring").style.setProperty("--score", `${percent * 3.6}deg`);
   document.querySelector("#score-ring").style.setProperty("--accent", colour);
+
+  const badge = document.querySelector("#scam-badge");
+  const isScam = verdict.isScam === true;
+  badge.textContent = isScam ? "⚠ Scam detected" : "No scam detected";
+  badge.setAttribute("data-scam", isScam ? "true" : "false");
+
   document.querySelector("#scam-type").textContent = verdict.scamType || "Unclear";
   document.querySelector("#confidence").textContent = titleCase(verdict.confidence || "medium");
   document.querySelector("#mode").textContent = modeLabel(verdict.mode);
@@ -158,8 +172,8 @@ function renderVerdict(verdict) {
   }
 
   const timeline = document.querySelector("#timeline");
-  if (verdict.timeline) {
-    document.querySelector("#timeline-text").textContent = `${verdict.timeline.attackNarrative} Ultimate goal: ${verdict.timeline.ultimateGoal}`;
+  if (verdict.timeline && verdict.timeline.attackNarrative) {
+    document.querySelector("#timeline-text").textContent = `${verdict.timeline.attackNarrative} Ultimate goal: ${verdict.timeline.ultimateGoal || "Unknown"}`;
     timeline.classList.remove("hidden");
   } else {
     timeline.classList.add("hidden");
@@ -187,6 +201,7 @@ function showNoticeOnly(message) {
     reasoning: "Sentinel needs usable evidence before it can produce a meaningful verdict.",
     recommendedAction: "Add a screenshot or paste the suspicious message, then try again.",
     confidence: "low",
+    isScam: false,
     mode: "local"
   };
   renderVerdict(lastVerdict);
