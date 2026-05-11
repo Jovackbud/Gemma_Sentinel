@@ -8,14 +8,14 @@ Gemma Sentinel is built for the DEV Gemma 4 Challenge "Build With Gemma 4" track
 
 Gemma 4 is the right model family for this because the project needs three capabilities at once:
 
-1. **Native multimodal understanding**: Scam evidence is often visual or spoken. Fake bank alerts, forged receipts, phishing pages, WhatsApp screenshots, and voice notes contain clues that keyword filters miss.
+1. **Native multimodal understanding**: Scam evidence is often visual. Fake bank alerts, forged receipts, phishing pages, and WhatsApp screenshots contain layout, logo, typography, and image-context clues that keyword filters miss.
 2. **Reasoning-first output**: A fraud tool must explain why something is suspicious. Gemma's value here is not just classification; it is producing user-verifiable red flags and plain-English next steps.
 3. **Local deployment path**: Fraud victims may be handling bank screenshots, identity details, OTP bait, invoices, or family conversations. Gemma's edge-capable variants make a private/offline mode realistic for low-connectivity areas and privacy-sensitive users.
 
 The intended model strategy is:
 
+- **Google-hosted Gemma 4 26B A4B** (`gemma-4-26b-a4b-it`) for reliable text/image analysis during demo and deployment.
 - **Local Gemma 4 E4B through llama.cpp** for the preferred private path: text, image, and native audio support with a minimal local runtime and no background model registry requirement.
-- **Hosted Gemma 4 E4B** for online text, image, and audio analysis when the user cannot run the model locally.
 - **Deterministic rules** only as a last-resort safety net when no model is reachable.
 
 This project deliberately avoids a heavy framework stack so the submission emphasizes Gemma 4 doing real work at the center, not infrastructure theater around it.
@@ -41,22 +41,33 @@ Open http://localhost:3000.
 ## Environment
 
 ```env
+MODEL_ENGINE=auto
+ENABLE_AUDIO=0
+GOOGLE_API_KEY=your_google_ai_studio_key
+GOOGLE_MODEL=gemma-4-26b-a4b-it
+GOOGLE_TIMEOUT=45
 LLAMACPP_ENABLED=1
 LLAMACPP_URL=http://127.0.0.1:8080
 LLAMACPP_MODEL=gemma-4-E4B-it
 LLAMACPP_TIMEOUT=60
-ONLINE_AUDIO_GEMMA_API_KEY=your_hosted_gemma_4_e4b_key
-ONLINE_AUDIO_GEMMA_URL=https://router.huggingface.co/v1
-ONLINE_AUDIO_GEMMA_MODEL=google/gemma-4-E4B-it:fastest
-ONLINE_AUDIO_GEMMA_TIMEOUT=60
 PORT=3000
 ```
 
 Analysis order:
 
-1. Local Gemma 4 E4B through llama.cpp at `LLAMACPP_URL`.
-2. Hosted Gemma 4 E4B through `ONLINE_AUDIO_GEMMA_*`.
+With `MODEL_ENGINE=auto`:
+
+1. Google-hosted Gemma for text/image evidence.
+2. Local Gemma 4 E4B through llama.cpp.
 3. Deterministic rules engine as the last-resort fallback.
+
+Audio is local-only. If audio is attached, the Google-hosted Gemma path is skipped because the configured hosted Gemma model is text/image only.
+
+Other modes:
+
+- `MODEL_ENGINE=google`: Google Gemma first, then local, then rules. Audio still skips Google.
+- `MODEL_ENGINE=local`: local Gemma first, then rules.
+- `MODEL_ENGINE=rules`: rules only.
 
 For preferred offline use, run `llama-server` with Gemma 4 E4B GGUF:
 
@@ -64,15 +75,21 @@ For preferred offline use, run `llama-server` with Gemma 4 E4B GGUF:
 llama-server -hf ggml-org/gemma-4-E4B-it-GGUF -c 8192 --host 127.0.0.1 --port 8080
 ```
 
-Gemma 4 E4B and E2B support native audio input. This app standardizes on Gemma 4 E4B for both online and offline model paths so text, image, and audio follow the same conceptual pipeline.
+On low-RAM laptops or Intel integrated graphics, prefer CPU-only mode:
 
-For hosted audio mode, configure an OpenAI-compatible provider that exposes Gemma 4 E4B audio support. The default shape targets Hugging Face's OpenAI-compatible router:
-
-```env
-ONLINE_AUDIO_GEMMA_API_KEY=your_huggingface_token
-ONLINE_AUDIO_GEMMA_URL=https://router.huggingface.co/v1
-ONLINE_AUDIO_GEMMA_MODEL=google/gemma-4-E4B-it:fastest
+```bash
+llama-server -hf ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M --host 127.0.0.1 --port 8080 -c 2048 -ngl 0 --device none --parallel 1 -b 256 -ub 128
 ```
+
+If your `llama-server` build does not support `--device none`, retry without that flag:
+
+```bash
+llama-server -hf ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M --host 127.0.0.1 --port 8080 -c 2048 -ngl 0 --parallel 1 -b 256 -ub 128
+```
+
+The Google AI Studio model used by default is `gemma-4-26b-a4b-it`. It is a text/image Gemma model, so it does not consume audio in this app.
+
+Audio is disabled by default with `ENABLE_AUDIO=0`. If enabled, audio is local-only through Gemma 4 E4B/E2B; rules and Google-hosted Gemma do not inspect audio.
 
 The local model path keeps evidence on the device and is the preferred mode for edge devices, low-connectivity environments, and sensitive evidence.
 

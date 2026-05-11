@@ -73,12 +73,6 @@ CASES = [
         "medium",
         "Fake bank alert / payment scam",
     ),
-    (
-        "Audio fallback",
-        "",
-        "medium",
-        "Suspicious message or document",
-    ),
 ]
 
 LEGITIMATE_CASES = [

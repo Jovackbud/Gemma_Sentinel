@@ -33,7 +33,7 @@
           </div>
 
           <div class="composer" id="composer">
-            <input id="file-input" name="file" type="file" accept="image/png,image/jpeg,image/webp,audio/wav,audio/mpeg,audio/mp4,audio/webm,audio/ogg" multiple>
+            <input id="file-input" name="file" type="file" accept="image/png,image/jpeg,image/webp" multiple>
             <div id="file-list" class="file-list" aria-live="polite"></div>
             <textarea id="text-input" rows="8" aria-label="Message or document text" placeholder="Paste the suspicious message, email, SMS, invoice text, or claim here."></textarea>
             <div class="composer-actions">
@@ -43,7 +43,7 @@
               <button class="primary" type="submit" id="analyse-btn">Analyse</button>
             </div>
           </div>
-          <p class="fineprint">Attach screenshots or short audio clips under 8 MB. Audio is routed to Gemma 4 E4B/E2B-capable engines online or offline.</p>
+          <p class="fineprint">Attach PNG, JPG, or WEBP screenshots under 8 MB. Audio is disabled by default and only works in local Gemma mode when enabled.</p>
         </form>
 
         <section class="panel result-panel" aria-live="polite">

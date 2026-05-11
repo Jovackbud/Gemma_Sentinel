@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
 PUBLIC_DIR = ROOT / "public"
-ONLINE_AUDIO_GEMMA_DEFAULT_BASE = "https://router.huggingface.co/v1"
+GOOGLE_GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 LLAMACPP_CHAT_PATH = "/v1/chat/completions"
 MAX_BODY_BYTES = 12 * 1024 * 1024
 
@@ -134,9 +134,26 @@ def analyse_evidence(payload: dict) -> dict:
     if not inputs:
         raise PublicError(400, "No evidence provided.", "no_evidence")
 
+    engine = os.getenv("MODEL_ENGINE", "auto").lower()
+    if engine not in {"auto", "google", "local", "rules"}:
+        engine = "auto"
     has_audio = any(item["type"] == "audio" for item in inputs)
 
-    if local_llamacpp_enabled():
+    if engine in {"auto", "google"} and not has_audio and os.getenv("GOOGLE_API_KEY"):
+        try:
+            raw = call_google_gemma(inputs)
+            verdict = parse_verdict(raw)
+            verdict["timeline"] = build_timeline(inputs)
+            verdict["mode"] = "gemma_google"
+            verdict["notice"] = "Analysed with Google-hosted Gemma. Evidence was sent to the configured Google API."
+            return verdict
+        except (HTTPError, URLError, TimeoutError, ValueError):
+            log("model_call_failed", provider="google_gemma")
+
+    if engine == "google" and has_audio:
+        log("model_skipped", provider="google_gemma", reason="audio_requires_local_gemma")
+
+    if engine in {"auto", "google", "local"} and local_llamacpp_enabled():
         try:
             raw = call_llamacpp_gemma(inputs)
             verdict = parse_verdict(raw)
@@ -146,17 +163,6 @@ def analyse_evidence(payload: dict) -> dict:
             return verdict
         except (HTTPError, URLError, TimeoutError, ValueError):
             log("model_call_failed", provider="llamacpp")
-
-    if has_audio and os.getenv("ONLINE_AUDIO_GEMMA_API_KEY"):
-        try:
-            raw = call_online_audio_gemma(inputs)
-            verdict = parse_verdict(raw)
-            verdict["timeline"] = build_timeline(inputs)
-            verdict["mode"] = "gemma_audio_cloud"
-            verdict["notice"] = "Audio was analysed by the configured hosted Gemma 4 E4B endpoint."
-            return verdict
-        except (HTTPError, URLError, TimeoutError, ValueError):
-            log("model_call_failed", provider="online_audio_gemma")
 
     verdict = local_verdict(inputs)
     verdict["mode"] = "rules"
@@ -180,15 +186,58 @@ def normalise_inputs(inputs: object) -> list[dict]:
             if re.match(r"^image/(png|jpe?g|webp)$", mime_type, re.I):
                 clean.append({"type": "image", "name": clean_name(item.get("name")), "content": content, "mimeType": mime_type})
         if kind == "audio" and content:
+            if not audio_enabled():
+                continue
             mime_type = str(item.get("mimeType") or "")
             if re.match(r"^audio/(wav|wave|mpeg|mp3|mp4|m4a|webm|ogg|x-m4a)$", mime_type, re.I):
                 clean.append({"type": "audio", "name": clean_name(item.get("name")), "content": content, "mimeType": mime_type})
     return clean
 
 
+def audio_enabled() -> bool:
+    return os.getenv("ENABLE_AUDIO", "0").lower() in {"1", "true", "yes", "on"}
+
+
 def clean_name(value: object) -> str:
     name = re.sub(r"[^\w .-]", "", str(value or "Evidence"))[:80].strip()
     return name or "Evidence"
+
+
+def call_google_gemma(inputs: list[dict]) -> str:
+    model = os.getenv("GOOGLE_MODEL", "gemma-4-26b-a4b-it")
+    parts: list[dict] = [{"text": SYSTEM_PROMPT}]
+    for index, item in enumerate(inputs, start=1):
+        label = f"Evidence {index}: {item.get('name') or item['type']}"
+        if item["type"] == "image":
+            parts.append({"text": f"--- {label} ({item['mimeType']}) ---"})
+            parts.append({
+                "inline_data": {
+                    "mime_type": item["mimeType"],
+                    "data": item["content"],
+                }
+            })
+        elif item["type"] == "text":
+            parts.append({"text": f"--- {label} ---\n{item['content']}"})
+    parts.append({"text": "Analyse all evidence together as one case. Return only the JSON object."})
+
+    body = json.dumps({
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {
+            "temperature": 0.1,
+            "maxOutputTokens": 1400,
+            "responseMimeType": "application/json",
+        },
+    }).encode("utf-8")
+
+    request = Request(
+        f"{GOOGLE_GEMINI_BASE}/models/{model}:generateContent?key={os.getenv('GOOGLE_API_KEY')}",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with urlopen(request, timeout=int(os.getenv("GOOGLE_TIMEOUT", "45"))) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    return data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
 
 
 def local_llamacpp_enabled() -> bool:
@@ -219,32 +268,6 @@ def call_llamacpp_gemma(inputs: list[dict]) -> str:
         headers=headers,
     )
     with urlopen(request, timeout=int(os.getenv("LLAMACPP_TIMEOUT", "60"))) as response:
-        data = json.loads(response.read().decode("utf-8"))
-    return data.get("choices", [{}])[0].get("message", {}).get("content", "")
-
-
-def call_online_audio_gemma(inputs: list[dict]) -> str:
-    model = os.getenv("ONLINE_AUDIO_GEMMA_MODEL", "google/gemma-4-E4B-it:fastest")
-    base_url = os.getenv("ONLINE_AUDIO_GEMMA_URL", ONLINE_AUDIO_GEMMA_DEFAULT_BASE).rstrip("/")
-    content = build_openai_multimodal_content(inputs, include_audio=True)
-    body = json.dumps({
-        "model": model,
-        "messages": [{"role": "user", "content": content}],
-        "temperature": 0.1,
-        "max_tokens": 1400,
-        "response_format": {"type": "json_object"},
-    }).encode("utf-8")
-
-    request = Request(
-        f"{base_url}/chat/completions",
-        data=body,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {os.getenv('ONLINE_AUDIO_GEMMA_API_KEY')}",
-            "Content-Type": "application/json",
-        },
-    )
-    with urlopen(request, timeout=int(os.getenv("ONLINE_AUDIO_GEMMA_TIMEOUT", "60"))) as response:
         data = json.loads(response.read().decode("utf-8"))
     return data.get("choices", [{}])[0].get("message", {}).get("content", "")
 

@@ -14,6 +14,7 @@ const notice = document.querySelector("#notice");
 
 let files = [];
 let lastVerdict = null;
+const audioAttachmentsEnabled = false;
 
 const demoText = `Good afternoon. I am Mr. Emmanuel Okafor, HR Director at Chevron Nigeria Ltd.
 We reviewed your profile and you have been shortlisted for a Logistics Coordinator position.
@@ -98,7 +99,7 @@ document.querySelector("#export-btn").addEventListener("click", () => {
 
 function addFiles(nextFiles) {
   const accepted = nextFiles.filter((file) => {
-    const validType = /^image\/(png|jpe?g|webp)$/i.test(file.type) || /^audio\/(wav|wave|mpeg|mp3|mp4|m4a|webm|ogg|x-m4a)$/i.test(file.type);
+    const validType = /^image\/(png|jpe?g|webp)$/i.test(file.type) || (audioAttachmentsEnabled && /^audio\/(wav|wave|mpeg|mp3|mp4|m4a|webm|ogg|x-m4a)$/i.test(file.type));
     const validSize = file.size <= 8 * 1024 * 1024;
     return validType && validSize;
   });
@@ -205,7 +206,7 @@ function titleCase(value) {
 }
 
 function modeLabel(mode) {
-  if (mode === "gemma_audio_cloud") return "Gemma hosted";
+  if (mode === "gemma_google") return "Google Gemma";
   if (mode === "gemma_llamacpp") return "Gemma local";
   if (mode === "rules") return "Rules";
   return "Local";
